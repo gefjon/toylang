@@ -2,12 +2,13 @@
   (:gen-class)
   (:require [toylang.cst :as cst]
             [toylang.ast :as ast]
-            [toylang.treeval :as treeval]))
+            [toylang.treeval :as treeval]
+            [clojure.spec.alpha :as spec]))
 
 (defn compile-treeval [forms]
-  (let [cst (cst/parse-block forms)]
-    (let [ast (ast/transform-block cst)]
-      (treeval/treeval ast {}))))
+  (let [cst (cst/parse-block forms)
+        ast (ast/transform-block cst)]
+    (treeval/treeval ast {})))
 
 (defn -main
   [& args]

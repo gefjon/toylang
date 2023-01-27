@@ -1,39 +1,47 @@
 (ns toylang.cst
   (:gen-class)
-  (:require [toylang.defexpr :refer [defexpr]]))
+  (:require [toylang.defexpr :refer [defexpr]]
+            [clojure.spec.alpha :as spec]))
 
-(defexpr Name [sym])
+(spec/def ::Expr
+  (spec/or ::Name ::Name
+           ::Lit ::Lit
+           ::Fn ::Fn
+           ::Let ::Let
+           ::Call ::Call
+           ::LetRec ::LetRec
+           ::Cond ::Cond
+           ::If ::If))
+
+(defexpr Name [[sym symbol?]])
 
 (defexpr Lit
-  [type
-   value])
+  [[value (spec/or ::Bool boolean? ::Int #(instance? java.lang.Long %) ::String string?)]])
 
 (defexpr Fn
-  [name
-   arglist
-   body ;; a Seq of exprs
+  [[name (spec/nilable ::Name)]
+   [arglist (spec/coll-of ::Name)]
+   [body (spec/coll-of ::Expr)] ;; a Seq of exprs
    ])
 
 (defexpr Let
-  [name
-   initform])
+  [[name ::Name]
+   [initform ::Expr]])
 
 (defexpr Call
-  [operator
-   operands])
+  [[operator ::Expr]
+   [operands (spec/coll-of ::Expr)]])
 
 (defexpr LetRec
-  [bindings ;; a Seq of [NAME INITFORM] pairs
-   ])
+  [[bindings (spec/coll-of (spec/tuple ::Name ::Expr))]])
 
 (defexpr Cond
-  [clauses ;; a Seq of [TEST & BODY] Seqs
-   ])
+  [[clauses (spec/and (spec/coll-of ::Expr) #(>= (count %) 1))]])
 
 (defexpr If
-  [condition
-   then
-   else])
+  [[condition ::Expr]
+   [then ::Expr]
+   [else ::Expr]])
 
 (defmulti parse class)
 
@@ -46,16 +54,16 @@
   (make-name sym))
 
 (defmethod parse java.lang.Boolean [b]
-  (make-lit ::Bool b))
+  (make-lit b))
 
 (defmethod parse java.lang.Long [num]
-  (make-lit ::Int num))
+  (make-lit num))
 
 (defmethod parse java.lang.Integer [num]
-  (make-lit ::Int (long num)))
+  (make-lit (long num)))
 
 (defmethod parse java.lang.String [str]
-  (make-lit ::String str))
+  (make-lit str))
 
 (defmethod parse-list 'fn
   ([_ arglist body]
