@@ -1,44 +1,37 @@
 (ns toylang.cst
   (:gen-class)
-  (:require [toylang.defexpr :refer [defexpr]]
+  (:refer-clojure :exclude [name])
+  (:require [toylang.defexpr :refer [defexpr define-language]]
             [clojure.spec.alpha :as spec]))
 
-(spec/def ::Expr
-  (spec/or ::Name ::Name
-           ::Lit ::Lit
-           ::Fn ::Fn
-           ::Let ::Let
-           ::Call ::Call
-           ::LetRec ::LetRec
-           ::Cond ::Cond
-           ::If ::If))
+(define-language Expr)
 
-(defexpr Name [[sym symbol?]])
+(defexpr Name Expr [[sym symbol?]])
 
-(defexpr Lit
+(defexpr Lit Expr
   [[value (spec/or ::Bool boolean? ::Int #(instance? java.lang.Long %) ::String string?)]])
 
-(defexpr Fn
+(defexpr Fn Expr
   [[name (spec/nilable ::Name)]
    [arglist (spec/coll-of ::Name)]
    [body (spec/coll-of ::Expr)] ;; a Seq of exprs
    ])
 
-(defexpr Let
+(defexpr Let Expr
   [[name ::Name]
    [initform ::Expr]])
 
-(defexpr Call
+(defexpr Call Expr
   [[operator ::Expr]
    [operands (spec/coll-of ::Expr)]])
 
-(defexpr LetRec
+(defexpr LetRec Expr
   [[bindings (spec/coll-of (spec/tuple ::Name ::Expr))]])
 
-(defexpr Cond
+(defexpr Cond Expr
   [[clauses (spec/and (spec/coll-of ::Expr) #(>= (count %) 1))]])
 
-(defexpr If
+(defexpr If Expr
   [[condition ::Expr]
    [then ::Expr]
    [else ::Expr]])
@@ -69,17 +62,17 @@
   ([_ arglist body]
    (make-fn nil
             (map parse arglist)
-            (parse body)))
+            [(parse body)]))
   ([_ name-or-arglist arglist-or-first-body & body]
    (if (or (symbol? name-or-arglist)
            (string? name-or-arglist))
      (make-fn (parse name-or-arglist)
-              (map parse arglist-or-first-body)
-              (map parse body))
+              (into [] (map parse arglist-or-first-body))
+              (into [] (map parse body)))
      (make-fn nil
-              (map parse name-or-arglist)
-              (map parse (cons arglist-or-first-body
-                               body))))))
+              (into [] (map parse name-or-arglist))
+              (into [] (map parse (cons arglist-or-first-body
+                                        body)))))))
 
 (defmethod parse-list 'let [_ name initform]
   (make-let (parse name)
