@@ -112,8 +112,11 @@
 (defmethod transform-stmt ::cst/LetRec [ltr continuation]
   (make-letrec (map (fn [[name initform]]
                       (spec/assert ::cst/Fn initform)
-                      [(transform-name name)
-                       (transform-expr initform)])
+                      ;; FIXME: handle case where initform has a name different than the binding
+                      (let [target-name (transform-name name)]
+                        [target-name
+                         (replace-name (transform-expr initform)
+                                       target-name)]))
                     (cst/bindings ltr))
                (transform-body continuation)))
 

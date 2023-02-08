@@ -3,6 +3,7 @@
   (:refer-clojure :exclude [compile])
   (:require [toylang.cst :as cst]
             [toylang.ast :as ast]
+            [toylang.unique-names :as rename]
             [toylang.conditional-call :as cond]
             [toylang.explicit-closures :as close]
             [toylang.explicit-letrec :as ltr]
@@ -14,7 +15,8 @@
 (defn compile [forms]
   (let [cst (cst/parse-block forms)
         ast (ast/transform-block cst)
-        conditional-call (cond/transform-program ast)
+        renamed (rename/rename-variables ast)
+        conditional-call (cond/transform-program renamed)
         closed (close/transform-program conditional-call)
         letreced (ltr/transform-expr closed)
         threeaddr (threeaddr/transform-program letreced)]
