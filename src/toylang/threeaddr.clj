@@ -32,11 +32,6 @@
 
 (define-language Insn)
 
-(defexpr Call Insn
-  [[into (spec/nilable ::LocalVariable)]
-   [operator (spec/or ::Value ::CodeName)]
-   [operands (spec/coll-of ::Value)]])
-
 (defexpr Copy Insn
   [[into ::LocalVariable]
    [from ::Value]])
@@ -44,9 +39,25 @@
 (defexpr Ret Insn
   [[value ::Value]])
 
+(defexpr Call Insn
+  [[into (spec/nilable ::LocalVariable)]
+   [operator (spec/or ::Value ::CodeName)]
+   [operands (spec/nilable (spec/coll-of ::Value))]])
+
 (defexpr TailCall Insn
   [[operator ::Value]
-   [operands (spec/coll-of ::Value)]])
+   [operands (spec/nilable (spec/coll-of ::Value))]])
+
+(defexpr CallIf Insn
+  [[into (spec/nilable ::LocalVariable)]
+   [cond ::Value]
+   [then ::Value]
+   [else ::Value]])
+
+(defexpr TailCallIf Insn
+  [[cond ::Value]
+   [then ::Value]
+   [else ::Value]])
 
 (defexpr MakeClosure Insn
   [[into ::LocalVariable]
@@ -58,32 +69,14 @@
    [var-to-set ::ClosureVariable]
    [new-value ::Value]])
 
-(defexpr BranchIf Insn
-  [[cond ::Value]
-   [then ::BlockName]
-   [else ::BlockName]])
-
-(defexpr Branch Insn
-  [[target ::BlockName]])
-
-(define-language Block')
-
-(defexpr Block Block'
-  [[insns (spec/coll-of ::Insn)]])
-
 (define-language Function')
-
-(spec/def ::FunctionBlocks
-  (spec/and vector? (spec/coll-of ::Block)))
 
 (defexpr Function Function'
   [[name ::FunctionName]
-   [arglist (spec/coll-of ::LocalVariable)]
+   [arglist (spec/nilable (spec/coll-of ::LocalVariable))]
    [closure-env (spec/coll-of ::ClosureVariable)]
-   [blocks ::FunctionBlocks]
-   [entry-block ::BlockName]
-   [current-block ::BlockName]
-   [child-functions (spec/coll-of ::Function)]])
+   [insns (spec/and vector? (spec/coll-of ::Insn))]
+   [child-functions (spec/map-of ::FunctionName ::Function)]])
 
 (defn- gen-local
   ([name]
@@ -96,45 +89,22 @@
   {:post [(spec/assert ::FunctionName %)]}
   (make-functionname (gensym)))
 
-(defn- extend-this-block [block-to-extend & new-insns]
-  {:pre [(spec/assert ::Block block-to-extend)
+(defn- extend-function [fun & new-insns]
+  {:pre [(spec/assert ::Function fun)
          (spec/assert (spec/coll-of ::Insn) new-insns)]
-   :post [(spec/assert ::Block %)]}
-  (update-insns block-to-extend
+   :post [(spec/assert ::Function %)]}
+  (update-insns fun
                 #(apply vector (concat % new-insns))))
-
-(defn- extend-block [fun block-to-extend & new-insns]
-  {:pre [(spec/assert ::Function fun)
-         (spec/assert ::BlockName block-to-extend)
-         (spec/assert (spec/coll-of ::Insn) new-insns)]
-   :post [(spec/assert ::Function %)]}
-  (update-blocks fun
-                 (fn [blocks]
-                   (update blocks
-                           (num block-to-extend)
-                           (fn [block]
-                             (apply extend-this-block block new-insns))))))
-
-(defn- extend-current-block [fun & new-insns]
-  {:pre [(spec/assert ::Function fun)
-         (spec/assert (spec/coll-of ::Insn) new-insns)]
-   :post [(spec/assert ::Function %)]}
-  (apply extend-block fun (current-block fun) new-insns))
 
 (defn- add-local-functions [parent & children]
   {:pre [(spec/assert ::Function parent)
          (spec/assert (spec/coll-of ::Function) children)]
    :post [(spec/assert ::Function %)]}
   (update-child-functions parent
-                          #(apply hash-set (concat % children))))
-
-(defn- add-new-block [fun]
-  (let [block-count (count (blocks fun))
-        new-block-name (make-blockname block-count)]
-    [new-block-name
-     (-> fun
-         (update-blocks #(assoc % block-count (make-block [])))
-         (replace-current-block new-block-name))]))
+                          #(reduce (fn [partial-children next-child]
+                                     (assoc partial-children (name next-child) next-child))
+                                   %
+                                   children)))
 
 ;;; multimethods for mutually recursive transformation
 
@@ -202,16 +172,13 @@
         closure-env (clojure.core/into [] (map (fn [[inner-name _]]
                                                  (transform-to-value inner-name))
                                                (ltr/closure-env fun)))
-        entry-block-name (make-blockname 0)
         empty-function (make-function (if-let [name (ltr/name fun)]
                                         (make-functionname (ltr/sym name))
                                         (gen-function-name))
                                       arglist
                                       closure-env
-                                      [(make-block [])]
-                                      entry-block-name
-                                      entry-block-name
-                                      #{})]
+                                      []
+                                      {})]
     (transform-to-return (ltr/body-expr fun) empty-function)))
 
 ;;; transforming SimpleValues, i.e. ltr/Lit and ltr/Name
@@ -229,10 +196,10 @@
   uninit)
 
 (defmethod transform-to-var' ::SimpleValue [val into fun]
-  (extend-current-block fun (make-copy into (transform-to-value val))))
+  (extend-function fun (make-copy into (transform-to-value val))))
 
 (defmethod transform-to-return' ::SimpleValue [val fun]
-  (extend-current-block fun (make-ret (transform-to-value val))))
+  (extend-function fun (make-ret (transform-to-value val))))
 
 (defmethod transform-to-discard' ::SimpleValue [_ fun]
   fun)
@@ -256,16 +223,16 @@
                                                  [(transform-to-value inner-name)
                                                   (transform-to-value outer-name)])
                                                (ltr/closure-env closure)))]
-    (add-local-functions (extend-current-block fun
-                                               (make-makeclosure into
-                                                                 (name child)
-                                                                 closure-env))
+    (add-local-functions (extend-function fun
+                                          (make-makeclosure into
+                                                            (name child)
+                                                            closure-env))
                          child)))
 
 (defmethod transform-to-return' ::GoesInVariable [varable fun]
   (let [temp (gen-local)
         with-in-var (transform-to-var varable temp fun)]
-    (extend-current-block with-in-var (make-ret temp))))
+    (extend-function with-in-var (make-ret temp))))
 
 (defmethod transform-to-discard' ::GoesInVariable [_ fun]
   fun)
@@ -283,24 +250,43 @@
 (defmethod transform-to-return' ::ltr/Call [call fun]
   (prep-call-then call fun
                   (fn [fun fn-temp arg-temps]
-                    (extend-current-block fun (make-tailcall fn-temp arg-temps)))))
+                    (extend-function fun (make-tailcall fn-temp arg-temps)))))
 
 (defmethod transform-to-var' ::ltr/Call [call into fun]
   (prep-call-then call fun
                   (fn [fun fn-temp arg-temps]
-                    (extend-current-block fun (make-call into fn-temp arg-temps)))))
+                    (extend-function fun (make-call into fn-temp arg-temps)))))
 
 (defmethod transform-to-discard' ::ltr/Call [call fun]
   (prep-call-then call fun
                   (fn [fun fn-temp arg-temps]
-                    (extend-current-block fun (make-call nil fn-temp arg-temps)))))
+                    (extend-function fun (make-call nil fn-temp arg-temps)))))
+
+;; transforming conditional calls
+
+(defmethod transform-to-return' ::ltr/CallIf [callif fun]
+  (extend-function fun (make-tailcallif (transform-to-value (ltr/condition callif))
+                                        (transform-to-value (ltr/then callif))
+                                        (transform-to-value (ltr/else callif)))))
+
+(defmethod transform-to-var' ::ltr/CallIf [callif into fun]
+  (extend-function fun (make-callif into
+                                    (transform-to-value (ltr/condition callif))
+                                    (transform-to-value (ltr/then callif))
+                                    (transform-to-value (ltr/else callif)))))
+
+(defmethod transform-to-discard' ::ltr/CallIf [callif fun]
+  (extend-function fun (make-callif nil
+                                    (transform-to-value (ltr/condition callif))
+                                    (transform-to-value (ltr/then callif))
+                                    (transform-to-value (ltr/else callif)))))
 
 ;; transforming assignments generated by letrec
 
 (defmethod transform-to-discard' ::ltr/SetClosure [setclosure fun]
-  (extend-current-block fun (make-setclosure (transform-to-value (ltr/target setclosure))
-                                             (transform-to-value (ltr/name setclosure))
-                                             (transform-to-value (ltr/new-value setclosure)))))
+  (extend-function fun (make-setclosure (transform-to-value (ltr/target setclosure))
+                                        (transform-to-value (ltr/name setclosure))
+                                        (transform-to-value (ltr/new-value setclosure)))))
 
 ;; transforming scoped constructs recursively, i.e. Begin, Let, If
 
@@ -325,58 +311,6 @@
 
 (defmethod transform-to-return' ::TransformsRecursively [expr fun]
   (transform-recursively expr transform-to-return fun))
-
-;; transforming conditionals
-
-(defn- transform-if-condition [iff fun]
-  {:pre [(spec/assert ::ltr/If iff)
-         (spec/assert ::Function fun)]
-   :post [(spec/assert (spec/tuple ::Function ::BlockName ::BlockName) %)]}
-  (let [cond (gen-local "if-condition-")
-        with-cond (transform-to-var (ltr/condition iff) cond fun)
-        start-block-name (current-block with-cond)
-        [then-block-name with-then-block] (add-new-block with-cond)
-        [else-block-name with-else-block] (add-new-block with-then-block)]
-    [(-> with-else-block
-         (replace-current-block start-block-name)
-         (extend-current-block (make-branchif cond then-block-name else-block-name)))
-     then-block-name
-     else-block-name]))
-
-(defmethod transform-to-var' ::ltr/If [iff into fun]
-  (let [[fun then-block-name else-block-name] (transform-if-condition iff fun)
-        [finally-block-name with-finally-block] (add-new-block fun)
-        goto-finally (make-branch finally-block-name)
-        transform-clause (fn [fun clause my-block-name]
-                           (extend-current-block (transform-to-var clause into
-                                                                   (replace-current-block fun my-block-name))
-                                                 goto-finally))]
-    (-> with-finally-block
-        (transform-clause (ltr/then iff) then-block-name)
-        (transform-clause (ltr/else iff) else-block-name)
-        (replace-current-block finally-block-name))))
-
-(defmethod transform-to-return' ::ltr/If [iff fun]
-  (let [[fun then-block-name else-block-name] (transform-if-condition iff fun)
-        transform-clause (fn [fun clause my-block-name]
-                           (transform-to-return clause
-                                                (replace-current-block fun my-block-name)))]
-    (-> fun
-        (transform-clause (ltr/then iff) then-block-name)
-        (transform-clause (ltr/else iff) else-block-name))))
-
-(defmethod transform-to-discard' ::ltr/If [iff fun]
-  (let [[fun then-block-name else-block-name] (transform-if-condition iff fun)
-        [finally-block-name with-finally-block] (add-new-block fun)
-        goto-finally (make-branch finally-block-name)
-        transform-clause (fn [fun clause my-block-name]
-                           (extend-current-block (transform-to-discard clause
-                                                                       (replace-current-block fun my-block-name))
-                                                 goto-finally))]
-    (-> with-finally-block
-        (transform-clause (ltr/then iff) then-block-name)
-        (transform-clause (ltr/else iff) else-block-name)
-        (replace-current-block finally-block-name))))
 
 ;; entry point
 

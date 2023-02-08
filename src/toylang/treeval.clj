@@ -2,7 +2,8 @@
   (:gen-class)
   (:require [toylang.ast :as ast]
             [toylang.defexpr :refer [variant]]
-            [clojure.spec.alpha :as spec]))
+            [clojure.spec.alpha :as spec])
+  (:use [slingshot.slingshot :only [throw+ try+]]))
 
 (spec/def ::Env (spec/map-of symbol? #(instance? clojure.lang.IAtom %)))
 
@@ -22,12 +23,10 @@
 
 (defmulti treeval (fn [expr _] (variant expr)))
 
-(defrecord UndefinedVariable [name])
-
 (defn undefined-variable [name]
   {:pre [(spec/assert ::ast/Name name)]}
-  (throw (ex-info "Undefined variable"
-                  (UndefinedVariable. name))))
+  (throw+ {:type ::UndefinedVariable
+           :var name}))
 
 (defn env-get-atom [env name]
   {:pre [(spec/assert ::Env env)
@@ -40,8 +39,8 @@
   {:pre [(spec/assert ::Env env)
          (spec/assert ::ast/Name name)]}
   (or @(env-get-atom env name)
-      (throw (ex-info "Variable's value is nil"
-                      {:variable name}))))
+      (throw+ {:type ::NilVariable
+               :var name})))
 
 (defmethod treeval ::ast/Name [var env]
   {:pre [(spec/assert ::ast/Name var)

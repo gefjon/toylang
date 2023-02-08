@@ -1,9 +1,10 @@
 (ns toylang.explicit-closures
   (:gen-class)
   (:refer-clojure :exclude [name first second])
-  (:require [toylang.defexpr :refer [defexpr define-language]]
-            [toylang.ast :as ast]
-            [clojure.spec.alpha :as spec]))
+  (:require [toylang.defexpr :refer [defexpr define-language spec-assert-then-true]]
+            [toylang.conditional-call :as cond]
+            [clojure.spec.alpha :as spec])
+  (:use [slingshot.slingshot :only [throw+ try+]]))
 
 (define-language Expr)
 
@@ -14,9 +15,9 @@
 (defexpr Lit Expr
   [[value (spec/or ::Bool boolean? ::Int #(instance? java.lang.Long %) ::String string?)]])
 
-(spec/def ::LocalEnv (spec/map-of ::ast/Name ::LocalName))
+(spec/def ::LocalEnv (spec/map-of ::cond/Name ::LocalName))
 
-(spec/def ::ClosureEnv (spec/map-of ::ast/Name ::ClosureName))
+(spec/def ::ClosureEnv (spec/map-of ::cond/Name ::ClosureName))
 
 (spec/def ::Env (spec/keys :req [::LocalEnv ::ClosureEnv]))
 
@@ -37,33 +38,33 @@
 
 (defexpr Call Expr
   [[operator ::Expr]
-   [operands (spec/coll-of ::Expr)]])
+   [operands (spec/nilable (spec/coll-of ::Expr))]])
 
 (defexpr LetRec Expr
   [[bindings (spec/coll-of (spec/tuple ::LocalName ::Fn))]
    [body-expr ::Expr]])
 
-(defexpr If Expr
-  [[condition ::Expr]
-   [then ::Expr]
-   [else ::Expr]])
+(defexpr CallIf Expr
+  [[condition ::LocalName]
+   [then ::LocalName]
+   [else ::LocalName]])
 
 (defn- find-name [name env]
-  {:pre [(spec/assert ::ast/Name name)
+  {:pre [(spec/assert ::cond/Name name)
          (spec/assert ::Env env)]
    :post [(spec/assert (spec/tuple (spec/or ::LocalName ::LocalName ::ClosureName ::ClosureName)
                                    ::ClosureEnv)
                        %)]}
   (if-let [local (get-in env [::LocalEnv name])]
     [local (::ClosureEnv env)]
-    (let [closure (make-closurename (ast/sym name))]
+    (let [closure (make-closurename (cond/sym name))]
       [closure (assoc (::ClosureEnv env)
                       name
                       closure)])))
 
 (defn- add-locals [env & key-value-tuples]
   {:pre [(spec/assert ::Env env)
-         (spec/assert (spec/coll-of (spec/tuple ::ast/Name ::LocalName)) key-value-tuples)]
+         (spec-assert-then-true (spec/nilable (spec/coll-of (spec/tuple ::cond/Name ::LocalName))) key-value-tuples)]
    :post [(spec/assert ::Env %)]}
   (update env
           ::LocalEnv
@@ -79,15 +80,15 @@
 (defmulti ^:private transform-expr' (fn [expr _] (:variant expr)))
 
 (defn- transform-expr [expr env]
-  {:pre [(spec/assert ::ast/Expr expr)
+  {:pre [(spec/assert ::cond/Expr expr)
          (spec/assert ::Env env)]
    :post [(spec/assert (spec/tuple ::Expr ::ClosureEnv) %)]}
   (transform-expr' expr env))
 
-(defmethod transform-expr' ::ast/Lit [lit env]
-  [(make-lit (ast/value lit)) (::ClosureEnv env)])
+(defmethod transform-expr' ::cond/Lit [lit env]
+  [(make-lit (cond/value lit)) (::ClosureEnv env)])
 
-(defmethod transform-expr' ::ast/Name [name env]
+(defmethod transform-expr' ::cond/Name [name env]
   (find-name name env))
 
 (defn- merge-closure-envs [& envs]
@@ -95,10 +96,10 @@
    :post [(spec/assert ::ClosureEnv %)]}
   (into {} (apply concat envs)))
 
-(defmethod transform-expr' ::ast/Fn [fun env]
-  (let [arglist (map #(make-localname (ast/sym %)) (ast/arglist fun))
-        inner-env (apply add-locals empty-env (map vector (ast/arglist fun) arglist))
-        [body-expr inner-closure-env] (transform-expr (ast/body-expr fun) inner-env)
+(defmethod transform-expr' ::cond/Fn [fun env]
+  (let [arglist (map #(make-localname (cond/sym %)) (cond/arglist fun))
+        inner-env (apply add-locals empty-env (map vector (cond/arglist fun) arglist))
+        [body-expr inner-closure-env] (transform-expr (cond/body-expr fun) inner-env)
         [outer-closure-env fn-closure-env] (reduce (fn [[partial-outer-env partial-inner-env] [source-name inner-name]]
                                                      (let [[outer-name _] (find-name source-name env)]
                                                        [(cond
@@ -106,31 +107,32 @@
                                                                                                         source-name
                                                                                                         outer-name)
                                                           (spec/valid? ::LocalName outer-name) partial-outer-env
-                                                          :else (throw (ex-info "Expected either a LocalName or a ClosureName as outer-name in transform-expr' ::ast/Fn"
-                                                                                {:found outer-name})))
+                                                          :else (throw+ {:type ::TypeError
+                                                                         :wanted '(or ::LocalName ::ClosureName)
+                                                                         :found outer-name}))
                                                         (assoc partial-inner-env inner-name outer-name)]))
                                                    [{} {}]
                                                    inner-closure-env)]
-    [(make-fn (when-let [fname (ast/name fun)]
-                (make-localname (ast/sym fname)))
+    [(make-fn (when-let [fname (cond/name fun)]
+                (make-localname (cond/sym fname)))
               arglist
               fn-closure-env
               body-expr)
      outer-closure-env]))
 
-(defmethod transform-expr' ::ast/Let [lt env]
-  (let [[initform initform-closure-vars] (transform-expr (ast/initform lt) env)
-        name (ast/name lt)
-        new-local (make-localname (ast/sym name))
+(defmethod transform-expr' ::cond/Let [lt env]
+  (let [[initform initform-closure-vars] (transform-expr (cond/initform lt) env)
+        name (cond/name lt)
+        new-local (make-localname (cond/sym name))
         body-env (add-locals env [name new-local])
-        [body-expr body-closure-vars] (transform-expr (ast/body-expr lt) body-env)
+        [body-expr body-closure-vars] (transform-expr (cond/body-expr lt) body-env)
         full-closure-env (merge-closure-envs initform-closure-vars body-closure-vars (::ClosureEnv env))]
     [(make-let new-local initform body-expr)
      full-closure-env]))
 
-(defmethod transform-expr' ::ast/Begin [begin env]
-  (let [[first first-closure-vars] (transform-expr (ast/first begin) env)
-        [second second-closure-vars] (transform-expr (ast/second begin) env)]
+(defmethod transform-expr' ::cond/Begin [begin env]
+  (let [[first first-closure-vars] (transform-expr (cond/first begin) env)
+        [second second-closure-vars] (transform-expr (cond/second begin) env)]
     [(make-begin first second)
      (merge-closure-envs first-closure-vars second-closure-vars)]))
 
@@ -143,16 +145,16 @@
           [[] {}]
           operands))
 
-(defmethod transform-expr' ::ast/Call [call env]
-  (let [[operands operand-closure-vars] (transform-call-operands (ast/operands call) env)
-        [operator operator-closure-vars] (transform-expr (ast/operator call) env)]
+(defmethod transform-expr' ::cond/Call [call env]
+  (let [[operands operand-closure-vars] (transform-call-operands (cond/operands call) env)
+        [operator operator-closure-vars] (transform-expr (cond/operator call) env)]
     [(make-call operator operands)
      (merge-closure-envs operand-closure-vars operator-closure-vars)]))
 
-(defmethod transform-expr' ::ast/LetRec [letrec env]
+(defmethod transform-expr' ::cond/LetRec [letrec env]
   (let [renames (map (fn [[name _]]
-                        [name (make-localname (ast/sym name))])
-                      (ast/bindings letrec))
+                        [name (make-localname (cond/sym name))])
+                      (cond/bindings letrec))
         inner-env (spec/assert ::Env (apply add-locals env renames))
         
         [bindings binding-closure-vars]
@@ -164,27 +166,30 @@
                       [(conj partial-bindings [localname new-initform])
                        (merge-closure-envs partial-closure-env new-closure-env)])))
                 [[] {}]
-                (ast/bindings letrec))
+                (cond/bindings letrec))
         
-        [body-expr body-closure-vars] (transform-expr (ast/body-expr letrec) inner-env)]
+        [body-expr body-closure-vars] (transform-expr (cond/body-expr letrec) inner-env)]
     [(make-letrec bindings body-expr)
      (merge-closure-envs binding-closure-vars body-closure-vars)]))
 
-(defmethod transform-expr' ::ast/If [iff env]
-  (let [[condition condition-closure-env] (transform-expr (ast/condition iff) env)
-        [then then-closure-env] (transform-expr (ast/then iff) env)
-        [else else-closure-env] (transform-expr (ast/else iff) env)]
-    [(make-if condition then else)
-     (merge-closure-envs condition-closure-env then-closure-env else-closure-env)]))
+(defmethod transform-expr' ::cond/CallIf [iff env]
+  (let [[condition _] (find-name (cond/condition iff) env)
+        [then _] (find-name (cond/then iff) env)
+        [else _] (find-name (cond/else iff) env)]
+    (spec/assert ::LocalName condition)
+    (spec/assert ::LocalName then)
+    (spec/assert ::LocalName else)
+    [(make-callif condition then else)
+     (::ClosureEnv env)]))
 
 (defn transform-program [program]
-  {:pre [(spec/assert ::ast/Expr program)]
+  {:pre [(spec/assert ::cond/Expr program)]
    :post [(spec/assert ::Expr %)]}
   (let [[new-program closure-env] (transform-expr program empty-env)]
     (if (empty? closure-env)
       new-program
-      (throw (ex-info "Program references unknown variables"
-                      {:source-program program
-                       :transformed-program new-program
-                       :unknown-variables closure-env})))))
+      (throw+ {:type ::UnknownVariables
+               :source-program program
+               :transformed-program new-program
+               :unknown-variables closure-env}))))
 

@@ -13,7 +13,7 @@
 
 (defexpr Fn Expr
   [[name (spec/nilable ::Name)]
-   [arglist (spec/coll-of ::Name)]
+   [arglist (spec/nilable (spec/coll-of ::Name))]
    [body (spec/coll-of ::Expr)] ;; a Seq of exprs
    ])
 
@@ -23,7 +23,7 @@
 
 (defexpr Call Expr
   [[operator ::Expr]
-   [operands (spec/coll-of ::Expr)]])
+   [operands (spec/nilable (spec/coll-of ::Expr))]])
 
 (defexpr LetRec Expr
   [[bindings (spec/coll-of (spec/tuple ::Name ::Expr))]])

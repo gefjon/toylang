@@ -25,7 +25,7 @@
 
 (defexpr Fn Expr
   [[name (spec/nilable ::LocalName)]
-   [arglist (spec/coll-of ::LocalName)]
+   [arglist (spec/nilable (spec/coll-of ::LocalName))]
    [closure-env ::ClosureEnv]
    [body-expr ::Expr]])
 
@@ -45,12 +45,12 @@
 
 (defexpr Call Expr
   [[operator ::Expr]
-   [operands (spec/coll-of ::Expr)]])
+   [operands (spec/nilable (spec/coll-of ::Expr))]])
 
-(defexpr If Expr
-  [[condition ::Expr]
-   [then ::Expr]
-   [else ::Expr]])
+(defexpr CallIf Expr
+  [[condition ::LocalName]
+   [then ::LocalName]
+   [else ::LocalName]])
 
 (defmulti ^:private transform-expr' :variant)
 
@@ -83,10 +83,10 @@
   (make-call (transform-expr (close/operator call))
              (map transform-expr (close/operands call))))
 
-(defmethod transform-expr' ::close/If [iff]
-  (make-if (transform-expr (close/condition iff))
-           (transform-expr (close/then iff))
-           (transform-expr (close/else iff))))
+(defmethod transform-expr' ::close/CallIf [iff]
+  (make-callif (transform-expr (close/condition iff))
+               (transform-expr (close/then iff))
+               (transform-expr (close/else iff))))
 
 ;;; transforming functions and letrec of functions
 
